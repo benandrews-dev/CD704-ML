@@ -11,6 +11,7 @@ machine learning module.
 - `resources/` contains shared datasets, references, and resource notes.
 - `requirements.txt` lists the Python packages used by the notebooks and
   scripts.
+- `scikit_learn_data` holds downloaded sklearn datasets
 
 ## Getting started
 
@@ -32,3 +33,8 @@ In VS Code, select the `Python (CD704 ML)` kernel when opening a notebook.
   directory and document their source in `resources/RESOURCES.md`.
 - Prefer one notebook per exercise or analysis, with a descriptive filename.
 
+## A Note from sklearn on the Boston Dataset
+
+- A message about the deprecation of the Boston dataset: [sklearn changelist](https://scikit-learn.org/stable/whats_new/v1.0.html#id9)
+- The deprecation message in sklearn from v1.1: [sklearn.datasets.load_boston](https://scikit-learn.org/1.1/modules/generated/sklearn.datasets.load_boston.html)
+- The Boston dataset in the sklearn v1.1 userguide: [sklearn user guide](https://scikit-learn.org/1.1/datasets/toy_dataset.html#boston-dataset)
