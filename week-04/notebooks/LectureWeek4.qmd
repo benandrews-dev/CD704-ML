@@ -1,0 +1,1080 @@
+---
+title: "Feature Selection and Regularisation"
+subtitle: "CD704: Machine Learning, Week 4"
+author: "Alexey Chernov"
+date: "27 October 2026"
+date-format: "D MMMM YYYY"
+lang: "en"
+format:
+  revealjs:
+    embed-resources: true
+    theme: [default, ../boadilla.scss]
+    footer: |
+      <span class="footer-author">{{< meta author >}} (University of Brighton)</span>
+      <span class="footer-title">{{< meta title >}}</span>
+      <span class="footer-stats">{{< meta date >}}</span>  
+    toc: true
+    toc-title: "Overview"
+    toc-depth: 1
+    slide-number: true
+    header-includes: |
+      <link href="https://fonts.googleapis.com/css2?family=Assistant:wght@300;400;600&display=swap" rel="stylesheet">
+    pdf-separate-fragments: true
+    pdf-max-pages-per-slide: 1
+    pdf-page-height: 11in
+    pdf-page-width: 8.5in
+    pdf-scale: 0.95
+    pdf-page-layout: full
+    print-background: true
+    pdf-print-includes:
+      - text: |
+          @page {
+            margin: 0.2cm;
+          }
+          section.quarto-title-block {
+            page-break-after: always;
+          }
+---
+
+```{r}
+#| include: false
+library(reticulate)
+knitr::opts_chunk$set(render = knitr::normal_print)
+
+```
+
+```{python}
+#| include: false
+import mglearn
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import scipy.stats as stats
+import statsmodels.api as sm
+from sklearn.datasets import load_diabetes
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet
+from sklearn.preprocessing import PolynomialFeatures, StandardScaler
+from sklearn.feature_selection import f_regression, SelectKBest, RFE, SequentialFeatureSelector
+from sklearn.metrics import r2_score, mean_squared_error
+
+# Set random seeds for reproducibility
+np.random.seed(42)
+
+# Global dataset preparation
+diabetes = load_diabetes()
+X_diab, y_diab = diabetes.data, diabetes.target
+X_diab_train, X_diab_test, y_diab_train, y_diab_test = train_test_split(X_diab, y_diab, random_state=42)
+
+# Polynomial features (degree 2, including interactions)
+poly = PolynomialFeatures(degree=2, include_bias=False) # intercept may be added in the model
+X_diab_poly = poly.fit_transform(X_diab)
+X_poly_train, X_poly_test, y_poly_train, y_poly_test = train_test_split(X_diab_poly, y_diab, random_state=42)
+
+# Adjusted R squared
+def calc_adj_r2(r2, n, p):
+    """Calculates Adjusted R-squared.
+    
+    Parameters:
+    r2 (float): The R-squared value.
+    n (int): Sample size of the evaluated split (train or test).
+    p (int): Number of predictor features (excluding intercept).
+    """
+    if n - p - 1 <= 0:
+        return float('nan')
+    return 1 - (1 - r2) * (n - 1) / (n - p - 1)
+```
+
+## Too Many Features
+
++ Last week Exercises: Diabetes data
++ Added features: quadratic polynomials and interactions
+
+```{python}
+#| echo: false
+#| output: asis
+
+# Fit models
+lr = LinearRegression().fit(X_diab_train, y_diab_train)
+lr_poly = LinearRegression().fit(X_poly_train, y_poly_train)
+
+# Feature & sample dimensions
+p_orig = X_diab.shape[1]
+p_poly = X_diab_poly.shape[1]
+
+n_tr = X_diab_train.shape[0]
+n_te = X_diab_test.shape[0]
+
+# Compute Adjusted R^2
+adj_r2_tr_orig = calc_adj_r2(lr.score(X_diab_train, y_diab_train), n_tr, p_orig)
+adj_r2_te_orig = calc_adj_r2(lr.score(X_diab_test, y_diab_test), n_te, p_orig)
+
+adj_r2_tr_poly = calc_adj_r2(lr_poly.score(X_poly_train, y_poly_train), n_tr, p_poly)
+adj_r2_te_poly = calc_adj_r2(lr_poly.score(X_poly_test, y_poly_test), n_te, p_poly)
+
+# Create summary dataframe
+df_perf = pd.DataFrame({
+    "Feature Set": ["Original", "Transformed"],
+    "p": [p_orig, p_poly],
+    "n": [X_diab.shape[0], X_diab.shape[0]],
+    "Train Adj $R^2$": [f"{adj_r2_tr_orig:.3f}", f"{adj_r2_tr_poly:.3f}"],
+    "Test Adj $R^2$": [f"{adj_r2_te_orig:.3f}", f"{adj_r2_te_poly:.3f}"]
+})
+print(df_perf.to_markdown(index=False))
+```   
+
++ Memorising training data instead of generalising
+
+# Feature Selection
+
+##  Why Select Features
+
++ Better generalisation (avoid overfitting)
++ Faster training and prediction
+  + Polynomial regression has $O(p^d)$ features
+  + Complex models may have training time $O(2^p)$
+    + Often resolved by approximate training
++ Easier interpretation
+
+## How to Select Features
+
++ Correlation with the target
+  + Univariate approach, fast and simple
++ Model-based selection
+  + When the model gives feature importance
++ Iterative selection
++ Implicit selection
+
+
+## Digression: Statistical Tests
+
++ (Null) Hypothesis: there is no effect or no relationship
+  + This feature is not related to the target
++ $p$-value: the probability of the data if the hypothesis is true
++ Small $p$-value: the data is inconsistent with the hypothesis 
+  + This can't be unrelated to the target
++ Large $p$-value: no evidence of inconsistency
+  + The feature does not show a relationship
+
+## Correlation-Based Selection
+
++ Evaluates each feature individually against the target
+  + Jointly useful features may be ignored
++ Only features with low $p$-values are preserved
+  + $F$-test or $\chi^2$ test
++ Possible selection rules: 
+  + $p$-value is below the threshold (often $5$%)
+  + Best $K$ features
+  + A fixed percentage of best features
+  
+
+## Diabetes Correlations: Performance
+
++ Best $K$ features out of quadratic polynomials and interactions: 
+  + $K\approx`r py_eval("X_poly_train.shape[0]")`/50$, hence $K=6$
+
+```{python}
+#| echo: false
+#| output: asis
+select_k = SelectKBest(f_regression, k=6)
+select_k.fit(X_poly_train, y_poly_train);
+X_k_train = select_k.transform(X_poly_train)
+X_k_test = select_k.transform(X_poly_test)
+
+lr_k = LinearRegression().fit(X_k_train, y_poly_train)
+
+# Feature & sample dimensions
+p_orig = X_diab.shape[1]
+p_poly = X_diab_poly.shape[1]
+p_k = X_k_train.shape[1]
+
+n_tr = X_diab_train.shape[0]
+n_te = X_diab_test.shape[0]
+
+# Compute Adjusted R^2 for all models
+adj_r2_tr_orig = calc_adj_r2(lr.score(X_diab_train, y_diab_train), n_tr, p_orig)
+adj_r2_te_orig = calc_adj_r2(lr.score(X_diab_test, y_diab_test), n_te, p_orig)
+
+adj_r2_tr_poly = calc_adj_r2(lr_poly.score(X_poly_train, y_poly_train), n_tr, p_poly)
+adj_r2_te_poly = calc_adj_r2(lr_poly.score(X_poly_test, y_poly_test), n_te, p_poly)
+
+adj_r2_tr_k = calc_adj_r2(lr_k.score(X_k_train, y_poly_train), n_tr, p_k)
+adj_r2_te_k = calc_adj_r2(lr_k.score(X_k_test, y_poly_test), n_te, p_k)
+
+# Create summary dataframe
+df_perf = pd.DataFrame({
+    "Feature Set": ["Original", "Polynomial", "Best 6"],
+    "p": [p_orig, p_poly, p_k],
+    "n": [X_diab.shape[0], X_diab_poly.shape[0], X_diab_poly.shape[0]],
+    "Train Adj $R^2$": [f"{adj_r2_tr_orig:.3f}", f"{adj_r2_tr_poly:.3f}", f"{adj_r2_tr_k:.3f}"],
+    "Test Adj $R^2$": [f"{adj_r2_te_orig:.3f}", f"{adj_r2_te_poly:.3f}", f"{adj_r2_te_k:.3f}"]
+})
+print(df_perf.to_markdown(index=False))
+```   
+
+## Diabetes Correlations: Selections
+
+```{python}
+#| echo: false
+#| output: asis
+
+# Get feature names from polynomial transformer using original feature names
+poly_names = poly.get_feature_names_out(diabetes.feature_names)
+
+# Extract indices, feature names, scores, and p-values of selected features
+selected_idx = select_k.get_support(indices=True)
+selected_names = poly_names[selected_idx]
+selected_pvals = select_k.pvalues_[selected_idx]
+selected_scores = select_k.scores_[selected_idx]
+
+# Create and display summary DataFrame
+df_k_features = pd.DataFrame({
+    "Rank": range(1, len(selected_idx) + 1),
+    "Selected Feature": selected_names,
+    "F-Statistic": [f"{s:.2f}" for s in selected_scores],
+    "p-value": [f"{p:.4e}" for p in selected_pvals]
+})
+print(df_k_features.to_markdown(index=False))
+```   
+
+## Selection Based on Linear Regression 
+
++ Linear regression provides $p$-value for each feature 
+  + The null hypothesis: the coefficient is $0$
+    + The true coefficient, not the estimated one
+
++ Now we assess whether a feature is related to the target given all other features    
+  + The "added value" of the feature
+  
+## Diabetes LR: Selections I
+
+```{python}
+#| echo: false
+#| output: asis
+
+# Get human-readable polynomial feature names
+poly_names = poly.get_feature_names_out(diabetes.feature_names)
+
+# Fit OLS model on all polynomial features
+X_sm = sm.add_constant(X_poly_train)
+model_sm = sm.OLS(y_poly_train, X_sm).fit()
+
+# Extract p-values and coefficients (excluding intercept)
+p_values = model_sm.pvalues[1:]
+coefs = model_sm.params[1:]
+
+# Create DataFrame sorted by lowest p-values
+df_ols_p = pd.DataFrame({
+    'Feature': poly_names,
+    'Coefficient': coefs,
+    'p-value': p_values
+}).sort_values('p-value').head(6)
+
+df_ols_p['Rank'] = range(1, 7)
+df_ols_p['Coefficient'] = df_ols_p['Coefficient'].apply(lambda x: f"{x:.2f}")
+df_ols_p['p-value'] = df_ols_p['p-value'].apply(lambda x: f"{x:.4e}")
+
+# Reorder columns
+df_ols_p = df_ols_p[['Rank', 'Feature', 'Coefficient', 'p-value']]
+
+print(df_ols_p.to_markdown(index=False))
+```   
+
++ The best $6$ out of all quadratic and interactions
+
+## Diabetes LR: Selections II
+
+```{python}
+#| echo: false
+#| output: asis
+
+# Fit OLS model on the 10 original features
+X_sm_orig = sm.add_constant(X_diab_train)
+model_sm_orig = sm.OLS(y_diab_train, X_sm_orig).fit()
+
+# Extract p-values and coefficients (excluding constant)
+p_values_orig = model_sm_orig.pvalues[1:]
+coefs_orig = model_sm_orig.params[1:]
+
+# Create DataFrame sorted by lowest p-values
+df_ols_orig = pd.DataFrame({
+    'Feature': diabetes.feature_names,
+    'Coefficient': coefs_orig,
+    'p-value': p_values_orig
+}).sort_values('p-value').head(6)
+
+df_ols_orig['Rank'] = range(1, 7)
+df_ols_orig['Coefficient'] = df_ols_orig['Coefficient'].apply(lambda x: f"{x:.2f}")
+df_ols_orig['p-value'] = df_ols_orig['p-value'].apply(lambda x: f"{x:.4e}")
+
+# Reorder columns for presentation
+df_ols_orig = df_ols_orig[['Rank', 'Feature', 'Coefficient', 'p-value']]
+
+print(df_ols_orig.to_markdown(index=False))
+```   
+
++ The best $6$ out of the original features
+
+
+## Diabetes LR:  Performance
+
+```{python}
+#| echo: false
+#| output: asis
+
+# Sample sizes
+n_tr = X_diab_train.shape[0]
+n_te = X_diab_test.shape[0]
+
+# 1. Original features (10)
+p_orig = X_diab.shape[1]
+lr_orig = LinearRegression().fit(X_diab_train, y_diab_train)
+r2_tr_orig = lr_orig.score(X_diab_train, y_diab_train)
+r2_te_orig = lr_orig.score(X_diab_test, y_diab_test)
+
+# 2. All polynomial features (104)
+p_poly = X_poly_train.shape[1]
+lr_poly = LinearRegression().fit(X_poly_train, y_poly_train)
+r2_tr_poly = lr_poly.score(X_poly_train, y_poly_train)
+r2_te_poly = lr_poly.score(X_poly_test, y_poly_test)
+
+# 3. Correlation selection (Top 6 via SelectKBest)
+p_k = X_k_train.shape[1]
+lr_k = LinearRegression().fit(X_k_train, y_poly_train)
+r2_tr_k = lr_k.score(X_k_train, y_poly_train)
+r2_te_k = lr_k.score(X_k_test, y_poly_test)
+
+# 4. OLS p-value selection (Top 6 lowest p-values from all Poly)
+top6_poly_idx = np.argsort(model_sm.pvalues[1:])[:6]
+X_poly6_train = X_poly_train[:, top6_poly_idx]
+X_poly6_test = X_poly_test[:, top6_poly_idx]
+p_poly6 = 6
+
+lr_poly6 = LinearRegression().fit(X_poly6_train, y_poly_train)
+r2_tr_poly6 = lr_poly6.score(X_poly6_train, y_poly_train)
+r2_te_poly6 = lr_poly6.score(X_poly6_test, y_poly_test)
+
+
+# 5. OLS p-value selection (Top 6 from Original 10 features)
+top6_orig_idx = np.argsort(model_sm_orig.pvalues[1:])[:6]
+X_orig6_train = X_diab_train[:, top6_orig_idx]
+X_orig6_test = X_diab_test[:, top6_orig_idx]
+p_orig6 = 6
+
+lr_orig6 = LinearRegression().fit(X_orig6_train, y_diab_train)
+r2_tr_orig6 = lr_orig6.score(X_orig6_train, y_diab_train)
+r2_te_orig6 = lr_orig6.score(X_orig6_test, y_diab_test)
+
+# Compile summary table
+df_all_perf = pd.DataFrame({
+    "Feature Set": ["Original", "All Polynomials", "Correlation Top 6", "LR Polynomial Top 6", "LR Original Top 6"],
+    "p": [p_orig, p_poly, p_k, p_poly6, p_orig6],
+    "Train Adj $R^2$": [
+        f"{calc_adj_r2(r2_tr_orig, n_tr, p_orig):.3f}",
+        f"{calc_adj_r2(r2_tr_poly, n_tr, p_poly):.3f}",
+        f"{calc_adj_r2(r2_tr_k, n_tr, p_k):.3f}",
+        f"{calc_adj_r2(r2_tr_poly6, n_tr, p_poly6):.3f}",
+        f"{calc_adj_r2(r2_tr_orig6, n_tr, p_orig6):.3f}"
+    ],
+    "Test Adj $R^2$": [
+        f"{calc_adj_r2(r2_te_orig, n_te, p_orig):.3f}",
+        f"{calc_adj_r2(r2_te_poly, n_te, p_poly):.3f}",
+        f"{calc_adj_r2(r2_te_k, n_te, p_k):.3f}",
+        f"{calc_adj_r2(r2_te_poly6, n_te, p_poly6):.3f}",
+        f"{calc_adj_r2(r2_te_orig6, n_te, p_orig6):.3f}"
+    ]
+})
+print(df_all_perf.to_markdown(index=False))
+```
+
+## Iterative Selection
+
++ Forward selection (from empty model)
+  + add the best one at each step
+
++ Backward elimination (from full model)
+  + remove the worst one at each step
+  
++ Stepwise regression (from some model)
+  + add all good features not currently in the model
+  + remove all bad features in the model
+  
+## Criteria for Selection
+
++ General: cross-validation
+
++ Specific for linear regression:
+  + $p$-value
+  + Adjusted $R^2$
+  + Akaike Information Criterion (AIC)
+  + Bayesian Information Criterion (BIC)
+  + Mallow's $C_p$
+
+## Diabetes: Elimination with CV
+
+```{python}
+#| echo: false
+#| fig-align: center
+from sklearn.feature_selection import RFECV
+from sklearn.model_selection import KFold
+
+rfecv = RFECV(estimator=LinearRegression(), step=1, cv=KFold(5), scoring='r2')
+rfecv.fit(X_poly_train, y_poly_train);
+
+plt.figure(figsize=(7, 4))
+plt.plot(range(1, len(rfecv.cv_results_['mean_test_score']) + 1), rfecv.cv_results_['mean_test_score'], color='purple', lw=2)
+plt.axvline(rfecv.n_features_, color='gray', linestyle='--', label=f'Optimal: {rfecv.n_features_} features')
+plt.xlabel('Number of features selected')
+plt.ylabel('Cross-Validation R²')
+plt.title('Recursive Feature Elimination on Diabetes Polynomials')
+plt.legend()
+plt.tight_layout()
+plt.show()
+```
+
+## Digression: Multiple Testing
+
++ If we test $100$ purely random features at a $p < 0.05$ threshold, 
+ by pure chance, $100 \times 0.05 = 5$ features will appear "statistically significant"
+  + The same is true for many models
+
++ Selecting features from a massive pool is inherently biased
+
++ Checking on a test set may help
+
++ There are statistical tools to deal with multiple testing
+
++ If you have many ideas and little data, consult a statistician
+
+# Linear Regression Revisited
+
+## LR as an Optimisation Problem
+
++ Linear regression estimates $\hat{\vec w}$ by minimising the RSS:
+
+$$ \text{RSS}(\vec w) = \sum_{i=1}^n \left( y_i - (\vec w^T \vec x_i + w_0) \right)^2 \:\to\:\min$$
+
+```{python}
+#| echo: false
+#| fig-align: center
+np.random.seed(10)
+x_demo = np.linspace(0, 5, 10)
+y_demo = 2 * x_demo + 1 + np.random.normal(0, 1.5, 10)
+lr_demo = LinearRegression().fit(x_demo.reshape(-1, 1), y_demo)
+y_pred_demo = lr_demo.predict(x_demo.reshape(-1, 1))
+
+plt.figure(figsize=(6, 3.5))
+plt.scatter(x_demo, y_demo, color='blue')
+plt.plot(x_demo, y_pred_demo, color='red', label='Regression Line')
+for i in range(len(x_demo)):
+    plt.plot([x_demo[i], x_demo[i]], [y_demo[i], y_pred_demo[i]], 'k:')
+plt.title('Minimising the Residuals')
+plt.legend()
+plt.tight_layout()
+plt.show()
+```
+
+## Maths Digression: Matrices
+
++ A matrix is a rectangular array of numbers
++ A matrix can be viewed as a collection of column vectors or row vectors
++ Matrix addition is component-wise
++ Matrix multiplication:
+  + rows of the first matrix and columns of the second matrix
+  + arrange the scalar products of them into the result matrix
++ Generally **non-commutative**: $AB \neq BA$
+
+## Maths Digression: Matrix Inverse
+
++ A matrix $A^{-1}$ is the matrix inverse of $A$ if $A^{-1}A = AA^{-1} = I$
+
++ Some matrices do not have an inverse 
+  + The only non-invertible number is $0$
+  + There are many non-zero non-invertible matrices
+  
++ A matrix is non-invertible (or singular) if its rows or columns are dependent (correlated)
+  + One row can be obtained as a combination of other rows
+
+
+## LR in Matrix Form
+
++ Let $X$ be the matrix of instances in the rows and features in the columns
+  + It is called the design matrix
++ Let $\vec y$ be the target vector
+
++ The optimisation task:
+$$ \text{RSS}(\vec w) = \| X\vec w - \vec y \|_2^2 \:\to\:\min$$
+
+
+## LR Solution in Matrix Form
+
++ The optimisation task has an explicit solution:
+$$ \hat{\vec w} = (X^T X)^{-1} X^T \vec y $$
+
++ The inverse of $X^T X$ may not exist
+
++ This is called multicollinearity
+  + the features are linearly dependent
+
+
+## Multicollinearity: A Problem?
+
++ Theory: we cannot invert $X^T X$
+  + Complete fail
++ Practice: modern software will silently give you some answer
+  + Advanced methods (Cholesky decomposition, SVD, pseudo-inverses) gracefully handle it under the hood
+  
++ But what happens to the model itself?
+
+## Artificial Data: Exact Multicollinearity
+
++ True Model: $y = 3x_1 + 2x_2 + 1$
+
++ A perfectly collinear third feature: $x_3 = 7x_1 - 5x_2$
+
+```{python}
+#| echo: false
+#| output: asis
+np.random.seed(2720)
+n_samples = 50
+x1 = np.random.normal(0, 1, n_samples)
+x2 = np.random.normal(0, 1, n_samples)
+y_art = 3 * x1 + 2 * x2 + 1 + np.random.normal(0, 0.2, n_samples)
+
+x3_exact = 7 * x1 - 5 * x2
+
+X_base = np.column_stack((x1, x2))
+X_col1 = np.column_stack((x1, x2, x3_exact))
+X_col2 = np.column_stack((x3_exact, x1, x2))
+
+lr_base = LinearRegression().fit(X_base, y_art)
+lr_col1 = LinearRegression().fit(X_col1, y_art)
+lr_col2 = LinearRegression().fit(X_col2, y_art)
+
+res = pd.DataFrame({
+    "Features": ["(x1, x2)", "(x1, x2, x3)", "(x3, x1, x2)"],
+    "w1": [f"{lr_base.coef_[0]:.2f}", f"{lr_col1.coef_[0]:.2f}", f"{lr_col2.coef_[1]:.2f}"],
+    "w2": [f"{lr_base.coef_[1]:.2f}", f"{lr_col1.coef_[1]:.2f}", f"{lr_col2.coef_[2]:.2f}"],
+    "w3": ["-", f"{lr_col1.coef_[2]:.2f}", f"{lr_col2.coef_[0]:.2f}"],
+    "Intercept": [f"{lr_base.intercept_:.2f}", f"{lr_col1.intercept_:.2f}", f"{lr_col2.intercept_:.2f}"]
+})
+print(res.to_markdown(index=False))
+```
+
++ $w_i$ above is always the coefficient at $x_i$
++ Predictions $\hat{y}$ will remain the same
+
+## Almost Multicollinearity
+
++ $x_\text{new} = 7x_1 - 5x_2 + \text{fresh random noise}$ 
+  + $x_\text{new}$ are merely highly correlated with $7x_1$ and $5x_2$
+
+```{python}
+#| echo: false
+#| output: asis
+x4_almost = 7 * x1 - 5 * x2 + np.random.uniform(-0.1, 0.1, n_samples)
+x5_almost = 7 * x1 - 5 * x2 + np.random.uniform(-0.1, 0.1, n_samples)
+
+X_col1_almost = np.column_stack((x1, x2, x4_almost))
+X_col2_almost = np.column_stack((x5_almost, x1, x2))
+
+lr_col1_almost = LinearRegression().fit(X_col1_almost, y_art)
+lr_col2_almost = LinearRegression().fit(X_col2_almost, y_art)
+
+res = pd.DataFrame({
+    "Features": ["(x1, x2)", "(x1, x2, xn)", "(xn, x1, x2)"],
+    "w1": [f"{lr_base.coef_[0]:.2f}", f"{lr_col1_almost.coef_[0]:.2f}", f"{lr_col2_almost.coef_[1]:.2f}"],
+    "w2": [f"{lr_base.coef_[1]:.2f}", f"{lr_col1_almost.coef_[1]:.2f}", f"{lr_col2_almost.coef_[2]:.2f}"],
+    "wn": ["-", f"{lr_col1_almost.coef_[2]:.2f}", f"{lr_col2_almost.coef_[0]:.2f}"],
+    "Intercept": [f"{lr_base.intercept_:.2f}", f"{lr_col1_almost.intercept_:.2f}", f"{lr_col2_almost.intercept_:.2f}"]
+})
+print(res.to_markdown(index=False))
+```
+
++ The coefficients may explode in magnitude
+  + Interpretation is difficult
+
+
+## Multicollinearity in Real Data
+
++ A typical financial report will include Gross Profit, Net Income, Total Revenue, Cost of Goods Sold, Operating Expenses, Interest, Taxes, Other Income, etc.
+  + Several linear relationships due to accounting rules
+  + Often not exact due to minor discrepancies (rounding, accounting timing, currency differences)
+  
++ Variance Inflation Factor 
+$\text{VIF}_j = \frac1{1-R_j^2}$
+  + $R_j^2$ is for linear regression of $x_j$ against all other features
+
+
+## Multicollinearity as High Variance
+
++ If the model is linear, LR has no bias
++ Nearly collinear features may introduce extreme variance
+  + The fit is sensitive even to permutations of the data
+
+```{python}
+#| echo: false
+#| fig-align: center
+fig, axes = plt.subplots(1, 2, figsize=(9, 4))
+
+# Simulating variance
+coefs_w1 = []
+for _ in range(5000):
+    idx = np.random.choice(n_samples, size=n_samples, replace=True) 
+    m = LinearRegression().fit(X_col1[idx], y_art[idx])
+    coefs_w1.append(m.coef_[0]);
+
+axes[0].hist(coefs_w1, bins=50, color='orange', edgecolor='black');
+axes[0].set_title('Distribution of w1 across permuted x3');
+axes[0].set_xlabel('Coefficient Value');
+
+coefs_w1 = []
+for _ in range(5000):
+    idx = np.random.choice(n_samples, size=n_samples, replace=True) 
+    m = LinearRegression().fit(X_col1_almost[idx], y_art[idx])
+    coefs_w1.append(m.coef_[0]);
+
+axes[1].hist(coefs_w1, bins=50, color='orange', edgecolor='black');
+axes[1].set_title('Distribution of w1 across permuted xn');
+axes[1].set_xlabel('Coefficient Value');
+
+plt.tight_layout()
+plt.show()
+```
+
+## The Bias-Variance Trade-off
+
+```{python}
+#| echo: false
+#| fig-align: center
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+np.random.seed(42)
+
+fig, axes = plt.subplots(2, 2, figsize=(8, 6.2))
+
+# Helper function to draw concentric bullseye targets
+def draw_target(ax):
+    circles = [1.0, 0.7, 0.4, 0.15]
+    colors = ['#f0f4f8', '#d9e2ec', '#bcccdc', '#d9534f']
+    for r, c in zip(circles, colors):
+        circle = plt.Circle((0, 0), r, color=c, ec='white', lw=1.5)
+        ax.add_patch(circle);
+    ax.set_xlim(-1.2, 1.2);
+    ax.set_ylim(-1.2, 1.2);
+    ax.set_aspect('equal');
+    ax.axis('off');
+
+# Configurations: (x_offset, y_offset, std_dev, title)
+configs = [
+    (0.0, 0.0, 0.08, "Low Bias, Low Variance\n(Ideal Model)"),
+    (0.55, 0.55, 0.08, "High Bias, Low Variance\n(Underfitting)"),
+    (0.0, 0.0, 0.35, "Low Bias, High Variance\n(Overfitting)"),
+    (0.55, 0.55, 0.35, "High Bias, High Variance\n(Worst Case)")
+]
+
+# Plot each combination
+for ax, (x_off, y_off, std, title) in zip(axes.flat, configs):
+    draw_target(ax);
+    
+    # Simulate repeated model estimates across different datasets
+    n_pts = 25
+    x = np.random.normal(x_off, std, n_pts)
+    y = np.random.normal(y_off, std, n_pts)
+    
+    ax.scatter(x, y, color='#0f2b48', edgecolors='white', linewidth=0.8, s=45, zorder=5, alpha=0.9);
+    ax.set_title(title, fontsize=11, fontweight='bold', pad=10);
+
+plt.tight_layout()
+plt.show()
+```  
+
+
+## The Bias-Variance MSE Decomposition
+
+$$ \text{Expected MSE} = \text{Bias}^2 + \text{Variance}$$
+
+```{python}
+#| echo: false
+#| fig-align: center
+complexity = np.linspace(0.1, 5, 100)
+bias = np.exp(-complexity) * 2
+variance = 0.1 * np.exp(complexity)
+mse = bias + variance + 0.5
+
+plt.figure(figsize=(7, 4));
+plt.plot(complexity, bias, label='Bias²', color='blue', lw=2);
+plt.plot(complexity, variance, label='Variance', color='crimson', lw=2);
+plt.plot(complexity, mse, label='Total Error (MSE)', color='black', lw=2, linestyle='--');
+plt.axvline(complexity[np.argmin(mse)], color='gray', linestyle=':', label='Optimal Complexity');
+plt.xlabel('Model Complexity');
+plt.ylabel('Error');
+plt.title('The Bias-Variance Decomposition');
+plt.legend();
+plt.tight_layout()
+plt.show()
+```
+
+
+# Regularisation
+
+## Ridge Regression
+
++ Aim: add bias to reduce variance
+  + Control the balance
+
++ Ridge regression optimisation task:
+$$ \sum_{i=1}^n \left( y_i - \vec w^T \vec x_i \right)^2 + \lambda \sum_{j=1}^p w_j^2 \:\to\: \min $$
++ $\lambda > 0$ is the regularisation (hyper)parameter
+  + $\lambda \sum_{j=1}^p w_j^2$ is the penalty term
+
+## Ridge Regression Intuition
+
++ Ridge regression optimisation task re-written:
+$$ \sum_{i=1}^n \left( y_i - \vec w^T \vec x_i \right)^2 + \sum_{j=1}^p (0 - \sqrt{\lambda}\vec w^T \vec e_j)^2 \:\to\:\min $$
+
++ We add $p$ pseudo-instances $(0,\ldots,\sqrt{\lambda},\ldots,0)$ with target $0$
+  + We pull the fitted hyperplane closer to the the axes
+    + the larger $\lambda$, the closer
+
+## Ridge Regression Solution
+
++ The task in the matrix form:
+$$\| X\vec w - \vec y \|_2^2 + \lambda\|\vec w\|_2^2 \:\to\:\min$$
+
++ The explicit solution:
+$$ \hat{\vec w}_{ridge} = (X^T X + \lambda I)^{-1} X^T \vec y $$
++ The matrix $(X^T X + \lambda I)$ is always invertible
+  + $X^T X$ is like $x^2\ge 0$, and $(X^T X + \lambda I)$ is like $x^2 + \lambda > 0$
+
+## Regularisation Parameter $\lambda$
+
++ When $\lambda = 0$, it is simply linear regression
+  + Low bias if the model is correct
+  + High variance if there are correlated features
+
++ When $\lambda = \infty$, then $\hat{\vec w} = \vec 0$
+  + Low variance (the prediction is always the same)
+  + High bias unless the target is independent of the instance
+
++ $\lambda$ is chosen by trial and error 
+
+## Artificial Data: Ridge Stabilisation
+
++ $y = 3x_1 + 2x_2 + 1$
++ $x_\text{new} = 7x_1 - 5x_2 + \text{fresh random noise}$ 
+
+```{python}
+#| echo: false
+#| output: asis
+
+rr_base = Ridge(alpha=1.0).fit(X_base, y_art)
+rr_col1_almost = Ridge(alpha=1.0).fit(X_col1_almost, y_art)
+rr_col2_almost = Ridge(alpha=1.0).fit(X_col2_almost, y_art)
+
+res_RR = pd.DataFrame({
+    "Features": ["(x1, x2)", "(x1, x2, xn)", "(xn, x1, x2)"],
+    "w1": [f"{rr_base.coef_[0]:.2f}", f"{rr_col1_almost.coef_[0]:.2f}", f"{rr_col2_almost.coef_[1]:.2f}"],
+    "w2": [f"{rr_base.coef_[1]:.2f}", f"{rr_col1_almost.coef_[1]:.2f}", f"{rr_col2_almost.coef_[2]:.2f}"],
+    "wn": ["-", f"{rr_col1_almost.coef_[2]:.2f}", f"{rr_col2_almost.coef_[0]:.2f}"],
+    "Intercept": [f"{rr_base.intercept_:.2f}", f"{rr_col1_almost.intercept_:.2f}", f"{rr_col2_almost.intercept_:.2f}"]
+})
+print(res_RR.to_markdown(index=False))
+```
+
++ The coefficients are now stable
+
+## RR: Permutation Variance
+
+```{python}
+#| echo: false
+#| fig-align: center
+fig, axes = plt.subplots(1, 2, figsize=(9, 4))
+
+# Simulating variance
+coefs_w1 = []
+for _ in range(5000):
+    idx = np.random.choice(n_samples, size=n_samples, replace=True) 
+    m = Ridge(alpha=1.0).fit(X_col1[idx], y_art[idx])
+    coefs_w1.append(m.coef_[0]);
+
+axes[0].hist(coefs_w1, bins=50, color='orange', edgecolor='black');
+axes[0].set_title('Distribution of w1 across permuted x3');
+axes[0].set_xlabel('Coefficient Value');
+
+coefs_w1 = []
+for _ in range(5000):
+    idx = np.random.choice(n_samples, size=n_samples, replace=True) 
+    m = Ridge(alpha=1.0).fit(X_col1_almost[idx], y_art[idx])
+    coefs_w1.append(m.coef_[0]);
+
+axes[1].hist(coefs_w1, bins=50, color='orange', edgecolor='black');
+axes[1].set_title('Distribution of w1 across permuted xn');
+axes[1].set_xlabel('Coefficient Value');
+
+plt.tight_layout()
+plt.show()
+```
+
++ The variance is now small when we permute almost multicollinear data
+
+## Ridge on the Diabetes Polynomials
+
+```{python}
+#| echo: false
+#| fig-align: center
+alphas = np.logspace(-3, 3, 50)
+train_scores = []
+test_scores = []
+
+scaler = StandardScaler()
+X_poly_train_scaled = scaler.fit_transform(X_poly_train)
+X_poly_test_scaled = scaler.transform(X_poly_test)
+
+for a in alphas:
+    r = Ridge(alpha=a).fit(X_poly_train_scaled, y_poly_train)
+    train_scores.append(r.score(X_poly_train_scaled, y_poly_train));
+    test_scores.append(r.score(X_poly_test_scaled, y_poly_test));
+
+plt.figure(figsize=(7, 4));
+plt.plot(alphas, train_scores, label='Train R²', color='blue', lw=2);
+plt.plot(alphas, test_scores, label='Test R²', color='crimson', lw=2);
+plt.xscale('log');
+plt.xlabel('Alpha (Penalty strength)');
+plt.ylabel('R² Score');
+plt.title('Ridge Regression Penalty Selection');
+plt.legend();
+plt.tight_layout()
+plt.show()
+```
+
+## Bayesian Interpretation of RR
+
++ Linear regression assumes uniform prior on $\vec w$ (all values of coefficients are equally likely)
+
++ Ridge regression assumes $\vec w$ from a normal (Gaussian) distribution centred at $0$
+
+  + We believe the true model weights are small
+
++ The parameter $\lambda=\frac{\sigma^2}{\tau^2}$, where 
+  + $\sigma^2$ is the true variance of the target 
+  + $\tau^2$ is the true variance of $\vec w$
+
+## RR for Implicit Smoothing
+
++ The (idea of) ridge regression can be used for "soft" feature selection
++ Consider a polynomial regression for a single feature
++ We can choose the degree $d$ manually (and explicitly) 
++ Alternatively, define a penalty term of the form $\lambda \sum w_k^2 \cdot 2^{k}$
+  + coefficients at higher powers are penalised more
++ High-degree polynomial terms are smoothly suppressed without being entirely discarded
+
+
+# LASSO and Implicit Feature Selection
+
+## LASSO Regression 
+
++ Least Absolute Shrinkage and Selection Operator
+
++ LASSO optimisation task:
+$$ \sum_{i=1}^n \left( y_i - \vec w^T \vec x_i \right)^2 + \lambda \sum_{j=1}^p |w_j| \:\to\: \min $$
++ Almost always some coefficients become exactly zero
+  + Acts as an automatic feature selector
+
+
+## Digression: $L_1$ vs $L_2$ Norm
+
+:::: {.columns}
+
+::: {.column width="50%"}
+$L_2$ norm (Euclidean Distance)
+$$ ||w||_2^2 = w_1^2 + w_2^2 $$
+
++ The shortest path 
+  + as the crow flies
++ Contours form circles
+:::
+
+::: {.column width="50%"}
+$L_1$ norm (Manhattan Distance)
+$$ ||w||_1 = |w_1| + |w_2| $$
+
++ Grid-like navigation 
+  + like NYC blocks
+  
++ Contours form diamonds
+:::
+
+::::
+
+
+## The Geometry of Feature Selection
+
+```{python}
+#| echo: false
+#| fig-align: center
+
+fig, axes = plt.subplots(1, 2, figsize=(10, 4.5))
+
+# Common contours for RSS
+x = np.linspace(-1.5, 1.5, 100)
+y = np.linspace(-1.5, 1.5, 100)
+X, Y = np.meshgrid(x, y)
+Z = (X - 0.6)**2 + 2*(Y - 1)**2  # Elliptical contours
+
+
+# Lasso (Diamond)
+_temp = axes[0].contour(X, Y, Z, levels=np.arange(0.2, 0.6, 0.1), colors='gray', alpha=0.5);
+_temp = axes[0].plot([0, 0.7, 0, -0.7, 0], [0.7, 0, -0.7, 0, 0.7], 'r-', lw=2); # L1 Diamond
+_temp = axes[0].fill([0, 0.7, 0, -0.7], [0.7, 0, -0.7, 0], 'red', alpha=0.2);
+_temp = axes[0].plot(0, 0.7, 'ko'); # Intersection roughly on axis
+_temp = axes[0].axhline(0, color='black', lw=0.5);
+_temp = axes[0].axvline(0, color='black', lw=0.5);
+_temp = axes[0].set_title('LASSO (L1): Hits the corner (w1 = 0)');
+
+# Ridge (Circle)
+_temp = axes[1].contour(X, Y, Z, levels=np.arange(0.1, 0.5, 0.1), colors='gray', alpha=0.5);
+circle = plt.Circle((0, 0), 0.67, color='blue', fill=True, alpha=0.2, lw=2, ec='blue');
+_temp = axes[1].add_patch(circle);
+_temp = axes[1].plot(0.27, 0.62, 'ko'); # Intersection off axes
+_temp = axes[1].axhline(0, color='black', lw=0.5);
+_temp = axes[1].axvline(0, color='black', lw=0.5);
+_temp = axes[1].set_title('Ridge (L2): Hits the edge (w1, w2 ≠ 0)');
+
+for ax in axes:
+    _temp = ax.set_aspect('equal');
+    _temp = ax.set_xlim(-1.5, 1.5);
+    _temp = ax.set_ylim(-1.5, 1.5);
+plt.tight_layout();
+plt.show()
+```   
+
+
+## Artificial Data: LASSO Selection
+
+```{python}
+#| echo: false
+#| output: asis
+
+LASSO_base = Lasso(alpha=0.1).fit(X_base, y_art)
+LASSO_col1_almost = Lasso(alpha=0.1).fit(X_col1_almost, y_art)
+LASSO_col2_almost = Lasso(alpha=0.1).fit(X_col2_almost, y_art)
+
+res_LASSO = pd.DataFrame({
+    "Features": ["(x1, x2)", "(x1, x2, xn)", "(xn, x1, x2)"],
+    "w1": [f"{LASSO_base.coef_[0]:.2f}", f"{LASSO_col1_almost.coef_[0]:.2f}", f"{LASSO_col2_almost.coef_[1]:.2f}"],
+    "w2": [f"{LASSO_base.coef_[1]:.2f}", f"{LASSO_col1_almost.coef_[1]:.2f}", f"{LASSO_col2_almost.coef_[2]:.2f}"],
+    "wn": ["-", f"{LASSO_col1_almost.coef_[2]:.2f}", f"{LASSO_col2_almost.coef_[0]:.2f}"],
+    "Intercept": [f"{LASSO_base.intercept_:.2f}", f"{LASSO_col1_almost.intercept_:.2f}", f"{LASSO_col2_almost.intercept_:.2f}"]
+})
+
+print(res_LASSO.to_markdown(index=False))
+```  
+
++ LASSO identifies that one variable is redundant and sets its weight to $0$
+
+## LASSO on the Diabetes Polynomials
+
+```{python}
+#| echo: false
+#| fig-align: center
+import warnings
+from sklearn.exceptions import ConvergenceWarning
+warnings.filterwarnings("ignore", category=ConvergenceWarning)
+
+alphas_lasso = np.logspace(-3, 1, 30)
+train_scores_l = []
+test_scores_l = []
+features_used = []
+
+for a in alphas_lasso:
+    l = Lasso(alpha=a, max_iter=10000).fit(X_poly_train_scaled, y_poly_train)
+    train_scores_l.append(l.score(X_poly_train_scaled, y_poly_train))
+    test_scores_l.append(l.score(X_poly_test_scaled, y_poly_test))
+    features_used.append(np.sum(l.coef_ != 0))
+
+fig, ax1 = plt.subplots(figsize=(7, 4))
+ax2 = ax1.twinx()
+
+_temp = ax1.plot(alphas_lasso, train_scores_l, label='Train R²', color='blue', lw=2)
+_temp = ax1.plot(alphas_lasso, test_scores_l, label='Test R²', color='crimson', lw=2)
+_temp = ax2.plot(alphas_lasso, features_used, label='Features Used', color='green', linestyle=':', lw=2)
+
+_temp = ax1.set_xscale('log');
+_temp = ax1.set_xlabel('Alpha (Penalty strength)');
+_temp = ax1.set_ylabel('R² Score');
+_temp = ax2.set_ylabel('Number of Non-Zero Features', color='green');
+_temp = ax1.set_title('LASSO Performance & Feature Count')
+_temp = ax1.legend(loc='upper right')
+_temp = ax2.legend(loc='center left')
+plt.tight_layout()
+plt.show()
+```
+
+## Regularisation Parameter $\lambda$
+
++ When $\lambda = 0$, it is still simply linear regression
+
++ When $\lambda = \infty$, then $\hat{\vec w} = \vec 0$
+
++ The difference between ridge and LASSO when $\lambda$ grows:
+  + all $\hat{\vec{w}}_{RR}$ shrink towards $0$ uniformly
+    + if one $w_j$ is large, it dominates $\sum w^2_j$
+  + $\hat{\vec{w}}_{LASSO}$ may contain small and large values
+
++ $\lambda$ is still chosen by trial and error 
+
+
+## Elastic Net
+
++ We can combine ridge regression and LASSO:
+$$ \sum_{i=1}^n \left( y_i - \vec w^T \vec x_i \right)^2  
+   + \lambda_\text{RR} \sum_{j=1}^p w_j^2 + \lambda_\text{LASSO} \sum_{j=1}^p |w_j| \:\to\: \min $$
+
++ Now we have two hyperparameters, $\lambda_\text{RR}$ and $\lambda_\text{LASSO}$
+
++ A round-edged diamond geometrically
+
++ Selects features but keeps groups of correlated variables
+
+## Artificial Data: Elastic Net
+
+```{python}
+#| echo: false
+#| output: asis
+
+alpha_EN = 0.1+1.0/n_samples
+l1_ratio_EN = 0.1 / (0.1+1.0/n_samples)
+EN_base = ElasticNet(alpha=alpha_EN,l1_ratio=l1_ratio_EN).fit(X_base, y_art)
+EN_col1_almost = ElasticNet(alpha=alpha_EN,l1_ratio=l1_ratio_EN).fit(X_col1_almost, y_art)
+EN_col2_almost = ElasticNet(alpha=alpha_EN,l1_ratio=l1_ratio_EN).fit(X_col2_almost, y_art)
+
+res_EN = pd.DataFrame({
+    "Features": ["(x1, x2)", "(x1, x2, xn)", "(xn, x1, x2)"],
+    "w1": [f"{EN_base.coef_[0]:.2f}", f"{EN_col1_almost.coef_[0]:.2f}", f"{EN_col2_almost.coef_[1]:.2f}"],
+    "w2": [f"{EN_base.coef_[1]:.2f}", f"{EN_col1_almost.coef_[1]:.2f}", f"{EN_col2_almost.coef_[2]:.2f}"],
+    "wn": ["-", f"{EN_col1_almost.coef_[2]:.2f}", f"{EN_col2_almost.coef_[0]:.2f}"],
+    "Intercept": [f"{EN_base.intercept_:.2f}", f"{EN_col1_almost.intercept_:.2f}", f"{EN_col2_almost.intercept_:.2f}"]
+})
+
+print(res_EN.to_markdown(index=False))
+```  
+
+## Regularisation in Scikit-Learn
+
++ `Ridge` uses RSS: $\|X\vec w - \vec y\|_2^2 + \alpha_{Ridge} \|\vec w\|_2^2$
+  + If you add more data, $\|X\vec w - \vec y\|_2^2$ grows
+  + $\alpha_{Ridge}$ must scale with $n$ for the same effect
+
++ `Lasso` uses MSE: $\frac{1}{2n} \|X\vec w - \vec y\|_2^2 + \alpha_{Lasso} \|\vec w\|_1$
+  + $\alpha_{Lasso}$ may remain the same with more instances
+
+## Next Steps
+
++ Check [Lasso and Ridge Regression in Python Tutorial](https://www.datacamp.com/tutorial/tutorial-lasso-ridge-regression){target="_blank"} on DataCamp 
+
++ Regularisation parameters, like many other hyperparameters, are often selected by grid search using cross-validation
+
++ Next week: "Validation, Cross-Validation, Preprocessing and Pipelines"
