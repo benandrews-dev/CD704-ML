@@ -1,0 +1,817 @@
+---
+title: "Model Selection and Deployment"
+subtitle: "CD704: Machine Learning, Week 5"
+author: "Alexey Chernov"
+date: "3 November 2026"
+date-format: "D MMMM YYYY"
+lang: "en"
+format:
+  revealjs:
+    embed-resources: true
+    theme: [default, ../boadilla.scss]
+    footer: |
+      <span class="footer-author">{{< meta author >}} (University of Brighton)</span>
+      <span class="footer-title">{{< meta title >}}</span>
+      <span class="footer-stats">{{< meta date >}}</span>  
+    toc: true
+    toc-title: "Overview"
+    toc-depth: 1
+    slide-number: true
+    header-includes: |
+      <link href="https://fonts.googleapis.com/css2?family=Assistant:wght@300;400;600&display=swap" rel="stylesheet">
+    pdf-separate-fragments: true
+    pdf-max-pages-per-slide: 1
+    pdf-page-height: 11in
+    pdf-page-width: 8.5in
+    pdf-scale: 0.95
+    pdf-page-layout: full
+    print-background: true
+    pdf-print-includes:
+      - text: |
+          @page {
+            margin: 0.2cm;
+          }
+          section.quarto-title-block {
+            page-break-after: always;
+          }
+---
+
+```{r}
+#| include: false
+library(reticulate)
+knitr::opts_chunk$set(render = knitr::normal_print)
+
+```
+
+```{python}
+#| include: false
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import scipy.stats as stats
+from sklearn.model_selection import train_test_split, KFold, cross_val_score, GridSearchCV, RandomizedSearchCV
+from sklearn.linear_model import LinearRegression, Ridge, Lasso, ElasticNet, HuberRegressor
+from sklearn.datasets import fetch_california_housing, make_classification
+from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix
+from sklearn.pipeline import Pipeline
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
+import warnings
+warnings.filterwarnings('ignore')
+
+```
+
+# Model Selection
+
+## Model Selection
+
++ Overall objective: the best future real-world performance
+  + Which model family?
+  + What features?
+  + Which values of hyperparameters? 
+
++ External factors: resources, laws, ethics, etc.
+
+
+## Model Confirmation
+
++ Confirm generalisation 
+  + performance on unseen data
+
+. . .   
+
+```{python}
+#| echo: false
+#| fig-align: center
+fig, ax = plt.subplots(figsize=(8, 1))
+_temp = ax.broken_barh([(0, 80)], (10, 9), facecolors='tab:blue')
+_temp = ax.broken_barh([(80, 20)], (10, 9), facecolors='tab:orange')
+_temp = ax.text(40, 14.5, 'Training Data (80%)', color='white', fontsize=12, ha='center', va='center')
+_temp = ax.text(90, 14.5, 'Test (20%)', color='white', fontsize=12, ha='center', va='center')
+_temp = ax.set_xlim(0, 100)
+_temp = ax.set_ylim(5, 25)
+_temp = ax.axis('off')
+plt.show()
+```   
++ Training / test split gives
+  + a fitted model
+  + a performance estimate
+
+## The Learning Curve
+
+```{python}
+#| echo: false
+#| fig-align: center
+train_sizes = np.linspace(10, 500, 100)
+test_err = 0.5 - 0.2 * np.exp(-train_sizes / 100)
+
+_temp = plt.figure(figsize=(7, 4))
+_temp = plt.plot(train_sizes, test_err, 'r-', lw=2, label='True Generalisation Accuracy')
+_temp = plt.xlabel('Number of Training Instances')
+_temp = plt.ylabel('Accuracy = 1 - Error')
+_temp = plt.title('Theoretical Learning Curve')
+_temp = plt.legend(loc='lower right')
+plt.tight_layout()
+plt.show()
+```
+
+## The Learning Curve and Estimates
+
++ For the learning curve, we assume an infinite test set
+  + True performance
+
++ The more data is used to fit a (good) model, the better
+
++ If the model is trained on insufficient data, the generalisation estimate is too low
+  + Pessimistic bias
+
+## Training / Test Trade-off
+
++ A small test set means sensitivity to each instance
+  + High variance of the performance estimate
+  
++ Training / test split is a trade-off for performance estimate
+  + Pessimistic bias vs high variance
+
+
+## Model Selection and Testing
+
++ If we use the test set to choose a model, we will use the same set **repeatedly**
+  + ...and we estimate the performance on the same set
+  + An example of data leakage
+    + The test set no longer provides a reliable estimate of future performance
+
++ The test set must not be used for model selection
+
+## Training / Validation / Test
+
+```{python}
+#| echo: false
+#| fig-align: center
+fig, ax = plt.subplots(figsize=(8, 2))
+_temp = ax.broken_barh([(0, 60)], (10, 9), facecolors='tab:blue')
+_temp = ax.broken_barh([(60, 20)], (10, 9), facecolors='tab:green')
+_temp = ax.broken_barh([(80, 20)], (10, 9), facecolors='tab:orange')
+_temp = ax.text(30, 14.5, 'Training (60%)', color='white', fontsize=12, ha='center', va='center')
+_temp = ax.text(70, 14.5, 'Validation (20%)', color='white', fontsize=10, ha='center', va='center')
+_temp = ax.text(90, 14.5, 'Test (20%)', color='white', fontsize=12, ha='center', va='center')
+_temp = ax.set_xlim(0, 100)
+_temp = ax.set_ylim(5, 25)
+_temp = ax.axis('off')
+plt.show()
+```
+
++ The training set is for fitting the model
++ The validation is for selecting the model
+  + model family, feature selection, tuning
++ The test set is for generalisation assessment
+
+## The Unlucky Split Problem
+
++ Risks of a fixed training / validation split:
+  + all the "easy" examples in validation (overly optimistic)
+  + all the outliers in validation (overly pessimistic)
+
++ High variance in model selection 
++ Pessimistic performance bias 
+  + The model overfits to the validation set and then fails on the test set
+
+# Cross-Validation
+
+## Cross-Validation Properties
+
++ Multiple splits instead of one fixed split
+  + several iterations
++ Each instance may be used for training and for testing
+  + but in different iterations
++ "Unlucky splits" are averaged out
+
+## CV as Pipeline Assessment
+
++ Cross-validation does not estimate performance of any single model
++ Cross-validation assesses a "pipeline"
+  + How to go from data to a fitted model
++ The best pipeline is trained on all training data and then tested on a hold-out set
+  + After the training / test split, the training set is used for CV
+
+
+## Leave-One-Out CV (LOOCV)
+
++ Train on all but one and test on that one
++ Repeat for each instance
+
+\
+
++ Largest possible training set $\Rightarrow$ lowest bias
++ Smallest validation set $\Rightarrow$ high variance
+  + and the training sets are correlated
++ Normally, computationally expensive 
+
+## LOOCV for Linear Regression
+
++ In practice, LOOCV is used only for linear regression
+  + and some derivated methods
++ For linear regressio, LOOCV can be calculated analytically using the fitted model
+  + Computationally cheap
+  + Does not add much (other than interpretation)
+
+## Leave-p-Out CV
+
++ Train on all but $p$ instances and test on the rest
++ Repeat for all possible combinations of $p$ instances
++ Computationally intractable
+  + exponential growth in $p$
+
+## Monte-Carlo CV
+
++ Randomly select several instances for testing and the rest is used for training
+  + Usually a fixed fraction is selected, 10% or 20%
++ Repeat $M$ times
+
+```{python}
+#| echo: false
+#| fig-align: center
+import numpy as np
+import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots(figsize=(8, 2.5))
+np.random.seed(42) # Keeps the random layout stable across slide renders
+
+for i in range(4):
+    # Create 100 total units, randomly pick 20 for validation (orange)
+    indices = np.arange(100)
+    val_indices = np.random.choice(indices, size=20, replace=False)
+    
+    # Map the indices to (start_pos, width) tuples required by broken_barh
+    blue_ranges = [(x, 1) for x in indices if x not in val_indices]
+    orange_ranges = [(x, 1) for x in val_indices]
+    
+    _temp = ax.broken_barh(blue_ranges, (10 - i*3, 2), facecolors='tab:blue', alpha=0.6)
+    _temp = ax.broken_barh(orange_ranges, (10 - i*3, 2), facecolors='tab:orange', alpha=0.9)
+
+_temp = ax.set_xlim(0, 100)
+_temp = ax.set_ylim(-2, 13)
+_temp = ax.axis('off')
+plt.show()
+```  
+
+## $k$-Fold CV
+
++ Split data into $k$ non-overlapping blocks (folds) of equal size
++ Repeat $k$ times: use one block for validation and the remaining $k-1$ for training
+
+```{python}
+#| echo: false
+#| fig-align: center
+fig, ax = plt.subplots(figsize=(8, 3))
+for i in range(5):
+    _temp = ax.broken_barh([(0, 100)], (12 - i*3, 2), facecolors='tab:blue', alpha=0.4)
+    _temp = ax.broken_barh([(i*20, 20)], (12 - i*3, 2), facecolors='tab:orange', alpha=0.9)
+    _temp = ax.text(i*20 + 10, 12 - i*3 + 1, 'Val', color='white', ha='center', va='center', fontsize=9, fontweight='bold')
+_temp = ax.set_xlim(0, 100)
+_temp = ax.set_ylim(-2, 15)
+_temp = ax.axis('off')
+plt.title("5-Fold Cross Validation")
+plt.show()
+
+```
+
+## Monte-Carlo vs $k$-Fold
+
++ Monte-Carlo decouples training set size and the number of repetitions 
+  + Variance and bias are controlled independently
+  
++ Monte-Carlo with $1/k$ testing and $k$-fold have the same bias
+
++ $k$-fold ensures non-overlapping test sets
+  + lower variance
+  + $2$-fold allows also non-overlapping training sets
+    + statistical tests work
+
+## Repeated k-Fold CV
+
++ Repeat $R$ times
+  + Randomly re-shuffle the data
+  + Perform $k$-fold CV
++ Averaging across $k \times R$ models
++ Often combines advantages of Monte-Carlo and $k$-fold
+
+## Scikit-Learn Specifics
+
++ `KFold(n_splits=5)` in `scikit-learn` is deterministic by default!
+  + To ensure it works for time series
+  + Catastrophic if the data is sorted by target
++  `KFold(n_splits=5, shuffle=True)` reshuffles randomly
+
++ `RepeatedKFold` for regression and balanced classification
+
++ `RepeatedStratifiedKFold` for imbalanced classes
+  + for a very small class, Monte-Carlo wins
+  
+## Cross-Validation Bottomline
+
++ CV solves the "unlucky split" issue
+
++ No issue for large datasets
+  + Training / validation / test is fine for model selection
+  
++ Model selection on smaller datasets:
+  + Nested cross-validation to avoid data leakage
+    + Model is selected on each train fold separately using CV
+
+# The Limits of (Cross-)Validation
+
+## Expected Performance
+
++ The performance on the test set is used to estimate the generalisation ability
+  + Cross-validation reduces the variance of the estimate
+
++ Hidden assumption!  
+  + Expected (=mean) performance exists
+  
++ Not all distributions have a mean
+
+## Heavy-Tail Distributions
+
++ Some processes produce extreme outliers
++ Example: Normal vs. Cauchy vs. Student $t$ 
+
+```{python}
+#| echo: false
+#| fig-align: center
+x = np.linspace(-10, 10, 400)
+_temp = plt.figure(figsize=(7, 4))
+_temp = plt.plot(x, stats.norm.pdf(x), 'b-', lw=2, label='Normal')
+_temp = plt.plot(x, stats.cauchy.pdf(x), 'r-', lw=2, label='Cauchy')
+_temp = plt.plot(x, stats.t.pdf(x, df=1), 'g--', lw=2, label='Student')
+_temp = plt.xlim(-8, 8)
+_temp = plt.title("Probability Density: Notice the fat tails of Cauchy")
+_temp = plt.legend()
+plt.tight_layout()
+plt.show()
+
+```
+
+## The Shooting Example
+
++ A blindfolded person shoots at a straight wall
++ The angle is chosen uniformly at random
++ The bullet's location on the wall follows a Student $t$-distribution with $1$ degree of freedom
++ The mean location of all bullet holes is mathematically undefined 
+
+## CV Non-Convergence
+
++ If errors follow a heavy-tailed distribution, adding more CV folds or more data doesn't stabilize the mean error
+
+```{python}
+#| echo: false
+#| fig-align: center
+np.random.seed(42)
+cauchy_data = np.abs(np.random.standard_cauchy(1000))
+norm_data = np.abs(np.random.standard_normal(1000))
+
+run_mean_cauchy = np.cumsum(cauchy_data) / np.arange(1, 1001)
+run_mean_norm = np.cumsum(norm_data) / np.arange(1, 1001)
+
+_temp = plt.figure(figsize=(7, 4))
+_temp = plt.plot(run_mean_norm, 'b-', label='Gaussian Error (Converges)')
+_temp = plt.plot(run_mean_cauchy, 'r-', label='Cauchy Error (Jumps unpredictably)')
+_temp = plt.xlabel('Number of Folds/Evaluations')
+_temp = plt.ylabel('Running Average of Error')
+_temp = plt.title('Failure of the Law of Large Numbers')
+_temp = plt.legend()
+plt.tight_layout()
+plt.show()
+```  
+
+## Practical Heavy-Tailed Data 
+
++ Catastrophe insurance 
++ High-frequency trading: flash crashes
+  + Nassim Taleb's black swans
++ Internet traffic / server load: virality
++ Epidemiology: super-spreader event
+
+## Dealing with Heavy Tails
+
++ Replace the performance metric
+  + Median instead mean
+  + Log transformation
+  
++ Do testing / (cross-)validaion as normal  
+
+# Hyperparameter Tuning
+
+## Grid Search with CV
+
++ Define a discrete grid of hyperparameter values
+  + often in the log scale
++ Try every possible combination
+
+```{python}
+#| echo: false
+#| output: asis
+cal_X, cal_y = fetch_california_housing(return_X_y=True)
+cal_X_sample, cal_y_sample = cal_X[:1000], cal_y[:1000] # Subsample for speed
+scaler = StandardScaler()
+X_sc = scaler.fit_transform(cal_X_sample)
+
+grid = {'alpha': [0.1, 1.0, 10.0]}
+gs = GridSearchCV(Ridge(), grid, cv=3)
+_temp = gs.fit(X_sc, cal_y_sample)
+
+df_gs = pd.DataFrame(gs.cv_results_)[['param_alpha', 'mean_test_score', 'rank_test_score']]
+df_gs.columns = ['Ridge Alpha', 'Mean CV R²', 'Rank']
+print(df_gs.to_markdown(index=False))
+
+```
+
+## Random Search
+
++ Sample hyperparameters randomly
+  + Define suitable distributions
++ Repeat a fixed number of times
+
+```{python}
+#| echo: false
+#| output: asis
+param_dist = {
+    'alpha': stats.loguniform(1e-2, 1e1),
+    'l1_ratio': stats.uniform(0, 1)
+}
+rs = RandomizedSearchCV(ElasticNet(), param_dist, n_iter=3, cv=3, random_state=42)
+_temp = rs.fit(X_sc, cal_y_sample)
+
+df_rs = pd.DataFrame(rs.cv_results_)[['param_alpha', 'param_l1_ratio', 'mean_test_score']]
+df_rs['param_alpha'] = df_rs['param_alpha'].apply(lambda x: f"{x:.4f}")
+df_rs['param_l1_ratio'] = df_rs['param_l1_ratio'].apply(lambda x: f"{x:.4f}")
+df_rs.columns = ['EN Alpha', 'L1 Ratio', 'Mean CV R²']
+print(df_rs.to_markdown(index=False))
+```
+
+## Grid vs Random Search
+
+* Random search covers more in many dimensions
+
+```{python}
+#| echo: false
+#| fig-align: center
+fig, axes = plt.subplots(1, 2, figsize=(8, 4))
+
+# Grid
+xg = np.linspace(0, 1, 4)
+yg = np.linspace(0, 1, 4)
+Xg, Yg = np.meshgrid(xg, yg)
+_temp = axes[0].scatter(Xg, Yg, color='blue')
+_temp = axes[0].set_title('Grid Search (16 trials)\nOnly 4 unique values per axis')
+
+# Random
+np.random.seed(42)
+xr = np.random.uniform(0, 1, 16)
+yr = np.random.uniform(0, 1, 16)
+_temp = axes[1].scatter(xr, yr, color='red')
+_temp = axes[1].set_title('Random Search (16 trials)\n16 unique values per axis')
+
+for ax in axes:
+    _temp = ax.set_xticks([])
+    _temp = ax.set_yticks([])
+    _temp = ax.set_xlim(-0.1, 1.1)
+    _temp = ax.set_ylim(-0.1, 1.1)
+
+plt.tight_layout()
+plt.show()
+
+```
+
+## Tuning as ML Task
+
++ Finding hyperparameters is itself an optimization problem!
+
++ We can use established ML models
+  + Brute-force search
+  + Heuristic search
+  + Online bandits
+  + Bayesian optimization
+  
+  
+# Performance Metrics
+
+## Accuracy Fail (Imbalanced Classes)
+
++ Accuracy = (Correct Predictions) / (Total Predictions)
++ $1$ in $1000$ is infected $\Rightarrow$ $99.9$% accuracy for free
+
+```{python}
+#| echo: false
+#| fig-align: center
+y_true = np.array([0]*999 + [1]*1)
+y_pred = np.array([0]*1000) # Always predict majority
+
+cm = confusion_matrix(y_true, y_pred)
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=['Normal', 'Infected'])
+_temp = disp.plot(cmap='Blues', values_format='d')
+plt.show()
+
+```
+
+## Alternatives to Accuracy
+
++ Precision: $\frac{\text{True Positive}}{\text{True Positive} + \text{False Positive}}$
+  + Selection rate ("found to be infected")
+
++ Recall: $\frac{\text{True Positive}}{\text{True Positive} + \text{False Negative}}$
+  + Detection rate ("infected to be found")
+
++ F1 score: harmonic mean of Precision and Recall
+
++ Mean recall
+
++ Matthews Correlation Coefficient
+
+
+## MSE Fail (Outliers)
+
++ Mean Squared Error heavily penalizes large errors
++ One single mistake (outlier) can ruin the entire model fit
+
+```{python}
+#| echo: false
+#| fig-align: center
+np.random.seed(42)
+x = np.linspace(0, 10, 15)
+y = 2 * x + 1 + np.random.normal(0, 1, 15)
+y[13] = -15 # Extreme outlier
+
+lr = LinearRegression().fit(x.reshape(-1,1), y)
+hr = HuberRegressor().fit(x.reshape(-1,1), y) # Robust to outliers
+
+_temp = plt.figure(figsize=(7, 4))
+_temp = plt.scatter(x, y, color='black', label='Data')
+_temp = plt.plot(x, lr.predict(x.reshape(-1,1)), 'r-', lw=2, label='Fitted for MSE (Pulled down)')
+_temp = plt.plot(x, hr.predict(x.reshape(-1,1)), 'g--', lw=2, label='Fitted for MAE/Robust (Ignores outlier)')
+_temp = plt.legend()
+plt.tight_layout()
+plt.show()
+```
+
+## MAE and MAPE
+
++ Mean Absolute Error: $\frac{1}{N} \sum_{i=1}^N |y_i - \hat{y}_i|$
+  + robust to outliers
+
++ Mean Absolute Percentage Error: $\frac{1}{N} \sum_{i=1}^N \left|\frac{y_i - \hat{y}_i}{y_i}\right|$
+  + Business-friendly ("5% off on average")
+  + Needs values away from $0$
+
+
+## Metrics as a Managerial Decision
+
++ Metrics translate ML performance into business value
+  + False negatives in medical lab cost lives
+    + optimize recall
+  + False positives in spam filter prevent communication
+    + optimize precision
+    
++ Domain experts dictate the metrics
+  + Cost matrix / custom loss function
+  + Instance weights
+
+# Pre-Processing and Pipelines
+
+## Pre-Processing
+
++ Raw data is rarely ready for algorithms
+
++ Common steps
+  + Finding outliers
+  + Handling missing values (imputation)
+  + Re-encoding categorical variables
+  + Scaling numerical variables
+
+
+## Scaling-Invariant vs Not-Invariant
+
++ Scaling-invariance: scaling features does not change prediction
+
++ Scaling-invariant models:
+  + ordinary linear regression
+  + decision trees
+
++ Not scaling-invariant models:
+  + Ridge / LASSO regression 
+  + $k$-Nearest Neighbours 
+
+## Scaling Strategies
+
++ Method-based
+  + `StandardScaler`
+  + `MinMaxScaler`
+  + `RobustScaler`
+
++ Domain-based
+  + Custom range (time, angle, marks, etc.)
+  + Assumed distribution
+  + `Normalizer`
+  
+## Scikit-Learn Scalers
+
+```{python}
+#| echo: false
+#| fig-align: center
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler, Normalizer
+
+# Generate synthetic dataset
+np.random.seed(42)
+n_samples = 30
+cov = [[2, 0], [0, 4]] 
+
+X0 = np.random.multivariate_normal([10, 3], cov, n_samples)
+X1 = np.random.multivariate_normal([10, 7], cov, n_samples)
+X = np.vstack((X0, X1))
+y = np.hstack((np.zeros(n_samples), np.ones(n_samples)))
+
+# Set up a 2x3 grid where the original data spans the entire left column
+fig = plt.figure(figsize=(10, 5))
+gs = fig.add_gridspec(2, 3, width_ratios=[1.2, 1, 1])
+
+ax_orig = fig.add_subplot(gs[:, 0])
+ax_std = fig.add_subplot(gs[0, 1])
+ax_min = fig.add_subplot(gs[0, 2])
+ax_rob = fig.add_subplot(gs[1, 1])
+ax_norm = fig.add_subplot(gs[1, 2])
+
+def plot_scaled(ax, X_scaled, title, show_axes=True, limits=None):
+    _temp = ax.scatter(X_scaled[y==0, 0], X_scaled[y==0, 1], s=8, alpha=0.6, c='blue', label='Mean (10, 3)')
+    _temp = ax.scatter(X_scaled[y==1, 0], X_scaled[y==1, 1], s=8, alpha=0.6, c='red', label='Mean (10, 7)')
+    _temp = ax.set_title(title, fontsize=11, fontweight='bold')
+    
+    if show_axes:
+        _temp = ax.axhline(0, color='black', lw=0.5, zorder=0)
+        _temp = ax.axvline(0, color='black', lw=0.5, zorder=0)
+        
+    _temp = ax.grid(True, linestyle=':', alpha=0.7)
+    
+    if limits:
+        _temp = ax.set_xlim(limits)
+        _temp = ax.set_ylim(limits)
+        _temp = ax.set_aspect('equal', adjustable='box')
+    else:
+        _temp = ax.set_aspect('equal', 'datalim')
+
+# Plot Original and Scaled Versions
+plot_scaled(ax_orig, X, "Original Data")
+
+shared_limits = (-2.2, 2.2)
+plot_scaled(ax_std, StandardScaler().fit_transform(X), "StandardScaler\n(Mean=0, Var=1)", limits=shared_limits)
+plot_scaled(ax_min, MinMaxScaler().fit_transform(X), "MinMaxScaler\n(Range [0, 1])", limits=shared_limits)
+plot_scaled(ax_rob, RobustScaler().fit_transform(X), "RobustScaler\n(Resistant to Outliers)", limits=shared_limits)
+plot_scaled(ax_norm, Normalizer().fit_transform(X), "Normalizer\n(Maps to Unit Circle)", limits=shared_limits)
+
+plt.tight_layout()
+plt.show()
+```  
+
+## Pre-Processing and Splits
+
++ Pre-preprocessing is determined by training data
+  + For example, the scaling transformation
+
++ The same procedure is applied to all data points 
+
++ Common mistakes:
+  + `StandardScaler` separately for each subset
+    + Fails on one-element test set
+  + `StandardScaler` before split
+    + Data leakage!
+
+## StandardScaler Data Leakage
+
++ A sample from normal distribution
+
+```{python}
+#| echo: false
+#| output: asis
+# Simulating leakage
+np.random.seed(42)
+X_full = np.random.normal(100, 25, 100).reshape(-1, 1)
+
+# Bad Way
+scaler_bad = StandardScaler().fit(X_full)
+X_scaled_bad = scaler_bad.transform(X_full)
+X_tr_bad, X_te_bad = train_test_split(X_scaled_bad, test_size=0.2, random_state=42)
+
+# Good Way
+X_tr_raw, X_te_raw = train_test_split(X_full, test_size=0.2, random_state=42)
+scaler_good = StandardScaler().fit(X_tr_raw)
+X_tr_good = scaler_good.transform(X_tr_raw)
+X_te_good = scaler_good.transform(X_te_raw)
+
+df_leak = pd.DataFrame({
+    "Method": ["Scaled Before Split (Leakage)", "Scaled After Split (Correct)"],
+    "Train Mean": [f"{X_tr_bad.mean():.4f}", f"{X_tr_good.mean():.4f}"],
+    "Test Mean": [f"{X_te_bad.mean():.4f}", f"{X_te_good.mean():.4f}"]
+})
+print(df_leak.to_markdown(index=False))
+```
+
+
+## Pipelines in Scikit-Learn I
+
++ For cross-validation, we need to define pre-processing for each training part
+  + Error-prone if manual
+
+```{python}
+#| echo: true
+#| code-line-numbers: false
+pipe = Pipeline([('scaler', StandardScaler()), ('classifier', Ridge())])
+pipe_nonames = make_pipeline(StandardScaler(), Ridge())
+```
+
++ Pipelines automate the correct sequence 
+  + The scaler will not see the validation fold
+
+## Pipelines in Scikit-Learn II
+
++ A pipeline can include any number of steps
+  + For example, imputation, feature engineering, scaling, prediction
+  
++ `Pipeline.fit()` calls
+  + `.fit()` followed by `.transform()` for each step except the last one
+  + `.fit()` on the last step
+
+# Model Development and Deployment
+
+## The ML Life Cycle in Industry
+
+1. Business problem and KPIs
+2. Data collection and fundamental pre-processing
+3. Model selection and assessment
+4. Validation and governance
+5. Deployment, monitoring and maintenance
+
+## Baseline
+
++ A baseline method allows us to calibrate performance expectations
+  + Data properties vs method properties
+  
++ Baseline depends on the "state of the art"  
+  + Predict the mean / most frequent class
+  + $3$-NN or linear regression
+  + The current method
+
+## Development Tracking
+
++ Model development requires a lot of experimentation
+
++ Tracking helps
+  + avoid data leakage
+  + maintain consistency
+  + justify decision
+  + facilitate handovers
+  
++ Tools such as MLflow log models, parameters and scores
+
+
+## Model Governance
+
++ Pre-deployment checks
+  + Final validation scores
+    + Ideally, the test data are not available to the developers
+  + Security checks
+  + Stability and performance checks
+
++ Compliance
+  + GDPR, EDI, etc.
+
++ Traceability and monitoring
+
+## Pre-Deployment Assessment
+
++ Shadow deployment
+  + The new model makes predictions on live data in the background, but the outside world sees only the old model
+
++ A/B testing
+  + Small proportion of the real work is done by the new model
+  + Business KPIs are compared between the old and new models
+
+## Model Monitoring
+
++ Models degrade over time
+
++ Data drift
+  + The distribution of instances is different
+
++ Concept drift
+  + The dependence between target and instance is different
+
+## DataCamp Courses
+
++ Finish [Supervised Learning with scikit-learn](https://app.datacamp.com/learn/courses/supervised-learning-with-scikit-learn){target="_blank"}
+
++ Finish [Feature Engineering for Machine Learning in Python](https://app.datacamp.com/learn/courses/feature-engineering-for-machine-learning-in-python){target="_blank"}
+
++ Do [Preprocessing for Machine Learning in Python](https://app.datacamp.com/learn/courses/preprocessing-for-machine-learning-in-python){target="_blank"}
+
++ Feel free to "watch" the courses instead of meticulously doing all the exercises
