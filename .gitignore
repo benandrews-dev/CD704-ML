@@ -21,7 +21,7 @@ env/
 htmlcov/
 
 # Data and generated outputs
-*.csv
+#*.csv
 *.tsv
 *.parquet
 *.pkl
